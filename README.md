@@ -1,20 +1,25 @@
 # Today Tasks
 
-To-do list statis (HTML + CSS + JS, tanpa build step).
+To-do list responsive dengan kategori, date strip mingguan, dan sinkronisasi antar perangkat lewat Supabase.
+Statis (HTML + CSS + JS), tanpa build step — cocok untuk Vercel.
+
+## Setup Supabase (sekali saja)
+
+1. Buat project di https://supabase.com (free tier cukup).
+2. **SQL Editor → New query**, tempel isi `supabase/schema.sql`, klik **Run**.
+3. **Project Settings → API**: salin *Project URL* dan *anon/publishable key* ke `config.js`.
+4. **Authentication → URL Configuration**:
+   - Site URL: `https://<nama-app>.vercel.app`
+   - Redirect URLs: tambahkan `https://<nama-app>.vercel.app/**`
 
 ## Deploy ke Vercel
 
-**Opsi 1 — Vercel CLI**
-```bash
-npm i -g vercel
-cd today-tasks
-vercel          # preview
-vercel --prod   # production
-```
+Import repo ini di https://vercel.com/new → Framework Preset **Other** → Deploy.
+Setiap push ke `main` akan deploy otomatis.
 
-**Opsi 2 — via GitHub**
-1. Push folder ini ke repo GitHub baru.
-2. Buka vercel.com/new → Import repo.
-3. Framework Preset: **Other**, Build Command & Output Directory dikosongkan → Deploy.
+## Catatan
 
-Data disimpan di localStorage browser masing-masing.
+- Login pakai magic link email (tanpa password).
+- Anon key aman di frontend; data tiap user dilindungi Row Level Security.
+- Tugas yang dulu tersimpan di localStorage browser akan dipindahkan otomatis ke akun saat login pertama.
+- Email bawaan Supabase dibatasi beberapa email per jam. Untuk pemakaian pribadi ini cukup.

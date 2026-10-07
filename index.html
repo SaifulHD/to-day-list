@@ -169,10 +169,22 @@ button{cursor:pointer}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 </style>
 <style>:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}body{margin:0}[hidden]{display:none!important}</style>
+<style>
+.acct{font-weight:700;font-size:13px;color:var(--fg)}
+.auth-form{display:flex;flex-direction:column;gap:10px;margin-top:18px}
+.auth-form input{width:100%;border:0;background:var(--card);border-radius:var(--r);padding:14px;outline:none}
+.auth-msg{font-size:13px;line-height:1.5;color:var(--muted);min-height:1.2em}
+.auth-msg.err{color:var(--accent)}
+.sync{font-size:11px;color:var(--muted);display:flex;align-items:center;gap:6px}
+.sync i{width:6px;height:6px;border-radius:50%;background:#3E8E6A}
+.sync.busy i{background:#C9971C}
+.sync.off i{background:var(--accent)}
+.skeleton{height:44px;border-radius:var(--r);background:var(--card);margin-top:8px;opacity:.7}
+</style>
 </head>
 <body>
 
-<div class="shell">
+<div class="shell" id="app" hidden>
   <aside class="panel side" aria-label="Kategori">
     <div class="side-hero">
       <div class="blob"></div><div class="grain"></div>
@@ -192,9 +204,10 @@ button{cursor:pointer}
         <h1 id="title">Hari ini</h1>
         <div class="sub" id="dateLabel"></div>
       </div>
-      <div style="display:flex;gap:12px;align-items:center">
+      <div style="display:flex;gap:10px;align-items:center">
         <div class="progress"><div class="bar"><i id="barFill" style="width:0"></i></div><span id="progTxt">0/0</span></div>
         <button class="theme-t" id="themeBtn" title="Ganti tema" aria-label="Ganti tema">◐</button>
+        <button class="theme-t acct" id="acctBtn" title="Akun" aria-label="Akun">?</button>
       </div>
     </header>
 
@@ -218,6 +231,21 @@ button{cursor:pointer}
   </main>
 </div>
 
+<!-- login -->
+<div class="onb" id="auth" hidden>
+  <div class="onb-card">
+    <div class="blob"></div><div class="grain"></div>
+    <h1>Tugasmu, tersimpan di semua perangkat</h1>
+    <p class="lead">Masuk pakai email. Kami kirim link masuk, tanpa password.</p>
+    <form class="auth-form" id="authForm">
+      <input id="authEmail" type="email" required placeholder="nama@email.com" aria-label="Email" autocomplete="email">
+      <button class="btn wide" id="authBtn" type="submit">Kirim link masuk</button>
+      <div class="auth-msg" id="authMsg"></div>
+    </form>
+  </div>
+</div>
+
+<!-- onboarding -->
 <div class="onb" id="onb" hidden>
   <div class="onb-card">
     <div class="blob"></div><div class="grain"></div>
@@ -236,10 +264,14 @@ button{cursor:pointer}
 
 <div class="toast" id="toast" hidden><span id="toastTxt"></span><button id="toastUndo">Urungkan</button></div>
 
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.2/dist/umd/supabase.js"></script>
+<script src="config.js"></script>
 <script>
 (() => {
-  const KEY = 'today-tasks-v1';
+  const LEGACY_KEY = 'today-tasks-v1';          // data lama (sebelum pakai Supabase)
+  const THEME_KEY = 'today-theme';
   const COLORS = ['#E0683A','#D9488B','#3E8E6A','#3B6FD4','#8A5CD6','#C9971C','#0F8C8C','#6B7380'];
+  const DEFAULT_CATS = [['Kerja','#E0683A'],['Kesehatan','#3E8E6A'],['Pribadi','#D9488B'],['Rumah','#3B6FD4']];
   const DAYS = ['MIN','SEN','SEL','RAB','KAM','JUM','SAB'];
   const DAYS_LONG = ['Minggu','Senin','Selasa','Rabu','Kamis','Jumat','Sabtu'];
   const MONTHS = ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember'];
@@ -249,52 +281,86 @@ button{cursor:pointer}
   const parse = k => { const [y,m,d] = k.split('-').map(Number); return new Date(y,m-1,d); };
   const addDays = (k,n) => { const d = parse(k); d.setDate(d.getDate()+n); return keyOf(d); };
   const todayKey = () => keyOf(new Date());
-  const uid = () => Math.random().toString(36).slice(2,10);
-  const esc = s => s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const uuid = () => crypto.randomUUID ? crypto.randomUUID() :
+    'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => { const r = Math.random()*16|0; return (c==='x'?r:(r&3|8)).toString(16); });
+  const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const $ = id => document.getElementById(id);
+  const ls = { get(k){ try { return localStorage.getItem(k); } catch { return null; } }, set(k,v){ try { localStorage.setItem(k,v); } catch {} }, del(k){ try { localStorage.removeItem(k); } catch {} } };
 
-  const defaults = () => {
-    const t = todayKey();
-    const cats = [
-      {id:'work', name:'Kerja', color:'#E0683A'},
-      {id:'health', name:'Kesehatan', color:'#3E8E6A'},
-      {id:'personal', name:'Pribadi', color:'#D9488B'},
-      {id:'home', name:'Rumah', color:'#3B6FD4'},
-    ];
-    const ex = [
-      ['Buat ikon untuk dashboard','work'],['Siapkan presentasi desain','work'],
-      ['Stretching 15 menit','health'],
-      ['Review target harian sebelum tidur','personal'],
-      ['Siram tanaman indoor','home'],
-    ];
-    return { cats, tasks: ex.map(([text,cat]) => ({id:uid(),text,cat,date:t,done:false})), onboarded:false, theme:null };
-  };
+  /* ---------- Supabase ---------- */
+  const cfg = window.TODAY_CONFIG || {};
+  if (!window.supabase || !cfg.supabaseUrl || cfg.supabaseUrl.includes('YOUR-PROJECT')) {
+    document.body.innerHTML = '<div style="max-width:420px;margin:15vh auto;padding:0 16px;line-height:1.6;font-family:var(--font)"><h2>Supabase belum diatur</h2><p>Isi <code>supabaseUrl</code> dan <code>supabaseAnonKey</code> di <code>config.js</code>, lalu deploy ulang.</p></div>';
+    return;
+  }
+  const sb = window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseAnonKey);
 
-  let S;
-  try { S = JSON.parse(localStorage.getItem(KEY)) || defaults(); } catch { S = defaults(); }
-  const save = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch {} };
-
+  let user = null;
+  let S = { cats: [], tasks: [] };   // cats: {id,name,color}  tasks: {id,text,cat,date,done}
+  let loaded = false;
   let sel = todayKey();
   let filter = 'all';
-  let lastCat = S.cats[0]?.id;
+  let lastCat = null;
 
-  const $ = id => document.getElementById(id);
   const catById = id => S.cats.find(c => c.id === id);
+  const toRow = t => ({ id: t.id, text: t.text, category_id: t.cat, date: t.date, done: t.done });
 
-  /* theme */
-  const applyTheme = () => { if (S.theme) document.documentElement.setAttribute('data-theme', S.theme); };
-  applyTheme();
+  /* tulis ke database; kalau gagal, beri tahu dan muat ulang data server */
+  async function sync(op) {
+    const { error } = await op;
+    if (error) {
+      console.error(error);
+      toast('Gagal menyimpan. Cek koneksi internet lalu coba lagi.');
+      await load();
+    }
+  }
+
+  async function load() {
+    if (!user) return;
+    const [c, t] = await Promise.all([
+      sb.from('categories').select('id,name,color').order('created_at'),
+      sb.from('tasks').select('id,text,category_id,date,done').order('created_at'),
+    ]);
+    if (c.error || t.error) { console.error(c.error || t.error); toast('Data belum bisa dimuat. Cek koneksi internet.'); return; }
+    S.cats = c.data;
+    S.tasks = t.data.map(r => ({ id: r.id, text: r.text, cat: r.category_id, date: r.date, done: r.done }));
+    if (!S.cats.length) await firstRun();
+    loaded = true; render();
+  }
+
+  /* akun baru: pindahkan data lama dari browser ini kalau ada, kalau tidak buat kategori bawaan */
+  async function firstRun() {
+    let legacy = null;
+    try { legacy = JSON.parse(ls.get(LEGACY_KEY)); } catch {}
+    const map = {};
+    if (legacy && Array.isArray(legacy.cats) && legacy.cats.length) {
+      S.cats = legacy.cats.map(c => { const id = uuid(); map[c.id] = id; return { id, name: String(c.name).slice(0,24), color: c.color || COLORS[0] }; });
+      S.tasks = (legacy.tasks || []).filter(t => map[t.cat] && t.text).map(t => ({ id: uuid(), text: String(t.text).slice(0,200), cat: map[t.cat], date: t.date, done: !!t.done }));
+    } else {
+      S.cats = DEFAULT_CATS.map(([name,color]) => ({ id: uuid(), name, color }));
+      S.tasks = [];
+    }
+    const a = await sb.from('categories').insert(S.cats);
+    if (a.error) { console.error(a.error); toast('Gagal menyiapkan kategori.'); return; }
+    if (S.tasks.length) {
+      const b = await sb.from('tasks').insert(S.tasks.map(toRow));
+      if (b.error) console.error(b.error); else { ls.del(LEGACY_KEY); toast(`${S.tasks.length} tugas dari browser ini sudah dipindahkan ke akunmu`); }
+    }
+  }
+
+  /* ---------- theme ---------- */
+  const applyTheme = t => { if (t) document.documentElement.setAttribute('data-theme', t); };
+  applyTheme(ls.get(THEME_KEY));
   $('themeBtn').onclick = () => {
-    const cur = document.documentElement.getAttribute('data-theme') ||
-      (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
-    S.theme = cur === 'dark' ? 'light' : 'dark'; applyTheme(); save();
+    const cur = document.documentElement.getAttribute('data-theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+    const next = cur === 'dark' ? 'light' : 'dark'; applyTheme(next); ls.set(THEME_KEY, next);
   };
 
+  /* ---------- render ---------- */
   function render() {
     const dayTasks = S.tasks.filter(t => t.date === sel);
     const scoped = filter === 'all' ? dayTasks : dayTasks.filter(t => t.cat === filter);
     const t = todayKey();
-
-    // title
     const d = parse(sel);
     $('title').textContent = sel === t ? 'Hari ini' : sel === addDays(t,1) ? 'Besok' : sel === addDays(t,-1) ? 'Kemarin' : DAYS_LONG[d.getDay()];
     $('dateLabel').textContent = `${DAYS_LONG[d.getDay()]}, ${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}` + (filter !== 'all' && catById(filter) ? ` · ${catById(filter).name}` : '');
@@ -304,41 +370,38 @@ button{cursor:pointer}
     $('barFill').style.width = scoped.length ? (done/scoped.length*100)+'%' : '0';
     const left = dayTasks.filter(x => !x.done).length;
     $('sideStat').textContent = left ? `${left} tugas tersisa untuk ${sel === t ? 'hari ini' : 'hari itu'}` : 'Semua beres. Nikmati harimu.';
+    if (user) $('acctBtn').textContent = (user.email || '?')[0].toUpperCase();
 
-    // week strip (Mon–Sun)
     const wd = (d.getDay()+6)%7; const start = addDays(sel,-wd);
     const dates = new Set(S.tasks.map(x => x.date));
     $('days').innerHTML = Array.from({length:7}, (_,i) => {
       const k = addDays(start,i), dd = parse(k);
-      return `<button class="day${k===sel?' sel':''}${k===t?' today':''}" data-day="${k}" aria-pressed="${k===sel}" aria-label="${DAYS_LONG[dd.getDay()]} ${dd.getDate()}">
-        <small>${DAYS[dd.getDay()]}</small><b>${dd.getDate()}</b>${dates.has(k)?'<span class="has"></span>':''}</button>`;
+      return `<button class="day${k===sel?' sel':''}${k===t?' today':''}" data-day="${k}" aria-pressed="${k===sel}" aria-label="${DAYS_LONG[dd.getDay()]} ${dd.getDate()}"><small>${DAYS[dd.getDay()]}</small><b>${dd.getDate()}</b>${dates.has(k)?'<span class="has"></span>':''}</button>`;
     }).join('');
 
-    // sidebar categories
     const cnt = id => dayTasks.filter(x => !x.done && (id==='all' || x.cat===id)).length;
     $('catList').innerHTML =
       `<div class="cat-row"><button class="cat-btn${filter==='all'?' active':''}" data-filter="all"><span class="dot" style="background:var(--ink)"></span><span class="name">Semua</span><span class="count">${cnt('all')}</span></button></div>` +
-      S.cats.map(c => `<div class="cat-row"><button class="cat-btn${filter===c.id?' active':''}" data-filter="${c.id}"><span class="dot" style="background:${c.color}"></span><span class="name">${esc(c.name)}</span><span class="count">${cnt(c.id)}</span></button><button class="del" data-delcat="${c.id}" aria-label="Hapus kategori ${esc(c.name)}">×</button></div>`).join('');
+      S.cats.map(c => `<div class="cat-row"><button class="cat-btn${filter===c.id?' active':''}" data-filter="${c.id}"><span class="dot" style="background:${esc(c.color)}"></span><span class="name">${esc(c.name)}</span><span class="count">${cnt(c.id)}</span></button><button class="del" data-delcat="${c.id}" aria-label="Hapus kategori ${esc(c.name)}">×</button></div>`).join('');
 
-    // phone chips
     $('chips').innerHTML =
       `<button class="chip${filter==='all'?' active':''}" data-filter="all">Semua · ${cnt('all')}</button>` +
-      S.cats.map(c => `<button class="chip${filter===c.id?' active':''}" data-filter="${c.id}"><span class="dot" style="background:${c.color}"></span>${esc(c.name)}</button>`).join('') +
+      S.cats.map(c => `<button class="chip${filter===c.id?' active':''}" data-filter="${c.id}"><span class="dot" style="background:${esc(c.color)}"></span>${esc(c.name)}</button>`).join('') +
       `<button class="chip ghost" data-addcat>+ Kategori</button>` +
       (filter!=='all' ? `<button class="chip ghost" data-delcat="${filter}">Hapus kategori</button>` : '');
 
-    // composer select
     const want = filter !== 'all' ? filter : (catById(lastCat) ? lastCat : S.cats[0]?.id);
     $('taskCat').innerHTML = S.cats.map(c => `<option value="${c.id}"${c.id===want?' selected':''}>${esc(c.name)}</option>`).join('');
 
-    // list
+    if (!loaded) { $('list').innerHTML = '<div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div>'; return; }
+
     const cats = filter === 'all' ? S.cats : S.cats.filter(c => c.id === filter);
     let html = '';
     for (const c of cats) {
       const items = dayTasks.filter(x => x.cat === c.id).sort((a,b) => a.done - b.done);
       if (!items.length) continue;
       const dn = items.filter(x=>x.done).length;
-      html += `<div class="group"><div class="group-h"><span style="color:${c.color}">${esc(c.name)}</span><em>${dn}/${items.length}</em></div><ul class="tasks">` +
+      html += `<div class="group"><div class="group-h"><span style="color:${esc(c.color)}">${esc(c.name)}</span><em>${dn}/${items.length}</em></div><ul class="tasks">` +
         items.map(x => `<li class="task${x.done?' done':''}"><input type="checkbox" class="check" id="c-${x.id}" data-toggle="${x.id}"${x.done?' checked':''}><label class="txt" for="c-${x.id}">${esc(x.text)}</label><button class="x" data-del="${x.id}" aria-label="Hapus tugas">×</button></li>`).join('') +
         `</ul></div>`;
     }
@@ -352,7 +415,7 @@ button{cursor:pointer}
     $('composer').hidden = !S.cats.length;
   }
 
-  /* events */
+  /* ---------- events ---------- */
   document.addEventListener('click', e => {
     const el = e.target.closest('[data-day],[data-filter],[data-del],[data-delcat],[data-addcat],#clearDone');
     if (!el) return;
@@ -360,19 +423,27 @@ button{cursor:pointer}
     else if (el.dataset.filter) { filter = el.dataset.filter; render(); }
     else if (el.dataset.del) {
       const i = S.tasks.findIndex(x => x.id === el.dataset.del);
-      if (i > -1) { const [rm] = S.tasks.splice(i,1); save(); render(); toast('Tugas dihapus', () => { S.tasks.splice(i,0,rm); save(); render(); }); }
+      if (i < 0) return;
+      const [rm] = S.tasks.splice(i,1); render();
+      sync(sb.from('tasks').delete().eq('id', rm.id));
+      toast('Tugas dihapus', () => { S.tasks.splice(i,0,rm); render(); sync(sb.from('tasks').insert(toRow(rm))); });
     }
     else if (el.dataset.delcat) confirmDeleteCat(el.dataset.delcat);
     else if ('addcat' in el.dataset) openAddCat();
     else if (el.id === 'clearDone') {
-      const before = S.tasks.slice();
-      S.tasks = S.tasks.filter(x => !(x.date === sel && x.done && (filter==='all' || x.cat===filter)));
-      save(); render(); toast('Tugas selesai dibersihkan', () => { S.tasks = before; save(); render(); });
+      const gone = S.tasks.filter(x => x.date === sel && x.done && (filter==='all' || x.cat===filter));
+      const ids = new Set(gone.map(x => x.id));
+      S.tasks = S.tasks.filter(x => !ids.has(x.id)); render();
+      sync(sb.from('tasks').delete().in('id', [...ids]));
+      toast('Tugas selesai dibersihkan', () => { S.tasks.push(...gone); render(); sync(sb.from('tasks').insert(gone.map(toRow))); });
     }
   });
   document.addEventListener('change', e => {
     const id = e.target.dataset.toggle;
-    if (id) { const x = S.tasks.find(t => t.id === id); if (x) { x.done = e.target.checked; save(); render(); } }
+    if (!id) return;
+    const x = S.tasks.find(t => t.id === id); if (!x) return;
+    x.done = e.target.checked; render();
+    sync(sb.from('tasks').update({ done: x.done }).eq('id', id));
   });
   $('taskCat').onchange = e => { lastCat = e.target.value; };
   $('composer').addEventListener('submit', e => {
@@ -380,14 +451,19 @@ button{cursor:pointer}
     const text = $('taskInput').value.trim();
     if (!text || !S.cats.length) return;
     const cat = $('taskCat').value; lastCat = cat;
-    S.tasks.push({id:uid(), text, cat, date:sel, done:false});
-    $('taskInput').value = ''; save(); render(); $('taskInput').focus();
+    const task = { id: uuid(), text, cat, date: sel, done: false };
+    S.tasks.push(task); $('taskInput').value = ''; render(); $('taskInput').focus();
+    sync(sb.from('tasks').insert(toRow(task)));
   });
   $('prevW').onclick = () => { sel = addDays(sel,-7); render(); };
   $('nextW').onclick = () => { sel = addDays(sel,7); render(); };
   $('addCatSide').onclick = openAddCat;
+  $('acctBtn').onclick = openAccount;
 
-  /* modal */
+  // ambil data terbaru saat tab dibuka lagi (mis. setelah mengubah dari HP)
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && user) load(); });
+
+  /* ---------- modal ---------- */
   const modal = $('modal'), sheet = $('sheet');
   const closeModal = () => { modal.hidden = true; };
   modal.addEventListener('click', e => { if (e.target === modal) closeModal(); });
@@ -409,8 +485,9 @@ button{cursor:pointer}
       const name = $('catName').value.trim();
       if (!name) { $('catErr').textContent = 'Isi nama kategori dulu.'; return; }
       if (S.cats.some(c => c.name.toLowerCase() === name.toLowerCase())) { $('catErr').textContent = `Kategori "${name}" sudah ada.`; return; }
-      const id = 'c' + uid(); S.cats.push({id, name, color}); filter = id; lastCat = id;
-      save(); closeModal(); render();
+      const cat = { id: uuid(), name, color };
+      S.cats.push(cat); filter = cat.id; lastCat = cat.id; closeModal(); render();
+      sync(sb.from('categories').insert(cat));
     };
     $('catSave').onclick = submit;
     $('catName').onkeydown = e => { if (e.key === 'Enter') submit(); };
@@ -426,24 +503,50 @@ button{cursor:pointer}
     $('dCancel').onclick = closeModal;
     $('dOk').onclick = () => {
       S.cats = S.cats.filter(x => x.id !== id); S.tasks = S.tasks.filter(x => x.cat !== id);
-      if (filter === id) filter = 'all'; save(); closeModal(); render();
+      if (filter === id) filter = 'all'; closeModal(); render();
+      sync(sb.from('categories').delete().eq('id', id));   // tugasnya ikut terhapus (on delete cascade)
     };
   }
 
-  /* toast with undo */
+  function openAccount() {
+    sheet.innerHTML = `<h3>Akun</h3><p>Masuk sebagai <b style="color:var(--fg)">${esc(user?.email || '')}</b>. Tugasmu tersimpan di akun ini dan sama di semua perangkat.</p>
+      <div class="row"><button class="btn light" id="aClose">Tutup</button><button class="btn" id="aOut">Keluar</button></div>`;
+    modal.hidden = false;
+    $('aClose').onclick = closeModal;
+    $('aOut').onclick = async () => { closeModal(); await sb.auth.signOut(); };
+  }
+
+  /* ---------- toast ---------- */
   let tt;
   function toast(msg, undo) {
     $('toastTxt').textContent = msg; $('toast').hidden = false;
-    $('toastUndo').onclick = () => { undo(); $('toast').hidden = true; };
-    clearTimeout(tt); tt = setTimeout(() => $('toast').hidden = true, 4000);
+    $('toastUndo').hidden = !undo;
+    $('toastUndo').onclick = () => { undo && undo(); $('toast').hidden = true; };
+    clearTimeout(tt); tt = setTimeout(() => $('toast').hidden = true, undo ? 4000 : 5000);
   }
 
-  /* onboarding */
+  /* ---------- login ---------- */
+  $('authForm').addEventListener('submit', async e => {
+    e.preventDefault();
+    const email = $('authEmail').value.trim();
+    const msg = $('authMsg'), btn = $('authBtn');
+    btn.disabled = true; btn.textContent = 'Mengirim…'; msg.className = 'auth-msg'; msg.textContent = '';
+    const { error } = await sb.auth.signInWithOtp({ email, options: { emailRedirectTo: location.origin + location.pathname } });
+    btn.disabled = false; btn.textContent = 'Kirim link masuk';
+    if (error) {
+      msg.className = 'auth-msg err';
+      msg.textContent = /rate|seconds/i.test(error.message) ? 'Terlalu sering mengirim. Tunggu sebentar lalu coba lagi.' : `Link belum terkirim: ${error.message}`;
+    } else {
+      msg.textContent = `Link masuk sudah dikirim ke ${email}. Buka email itu di perangkat ini lalu klik linknya.`;
+    }
+  });
+
+  /* ---------- onboarding ---------- */
   const SUGG = [
-    ['Olahraga 30 menit','health'],['Baca buku 20 halaman','personal'],['Meditasi 10 menit','health'],
-    ['Rencanakan menu makan','home'],['Siram tanaman','home'],['Tulis jurnal','personal'],
-    ['Minum 8 gelas air','health'],['Cek email kerja jam 9','work'],['Review target sebelum tidur','personal'],
-    ['Jalan kaki 5.000 langkah','health'],
+    ['Olahraga 30 menit','Kesehatan'],['Baca buku 20 halaman','Pribadi'],['Meditasi 10 menit','Kesehatan'],
+    ['Rencanakan menu makan','Rumah'],['Siram tanaman','Rumah'],['Tulis jurnal','Pribadi'],
+    ['Minum 8 gelas air','Kesehatan'],['Cek email kerja jam 9','Kerja'],['Review target sebelum tidur','Pribadi'],
+    ['Jalan kaki 5.000 langkah','Kesehatan'],
   ];
   const picked = new Set();
   function showOnb() {
@@ -456,24 +559,37 @@ button{cursor:pointer}
     };
     $('onb').hidden = false;
   }
-  const finishOnb = add => {
+  async function finishOnb(add) {
+    $('onb').hidden = true;
     if (add) {
       const t = todayKey();
+      const fresh = [];
       picked.forEach(i => {
-        const [text, cat] = SUGG[i];
-        if (!catById(cat)) return;
-        if (!S.tasks.some(x => x.date === t && x.text === text)) S.tasks.push({id:uid(), text, cat, date:t, done:false});
+        const [text, catName] = SUGG[i];
+        const cat = S.cats.find(c => c.name.toLowerCase() === catName.toLowerCase()) || S.cats[0];
+        if (cat && !S.tasks.some(x => x.date === t && x.text === text)) fresh.push({ id: uuid(), text, cat: cat.id, date: t, done: false });
       });
+      if (fresh.length) { S.tasks.push(...fresh); render(); sync(sb.from('tasks').insert(fresh.map(toRow))); }
     }
-    S.onboarded = true; save(); $('onb').hidden = true; render();
-  };
+    await sb.auth.updateUser({ data: { onboarded: true } });
+  }
   $('onbGo').onclick = () => finishOnb(true);
   $('onbSkip').onclick = () => finishOnb(false);
 
-  render();
-  if (!S.onboarded) showOnb();
+  /* ---------- session ---------- */
+  async function setUser(u) {
+    const changed = (u?.id || null) !== (user?.id || null);
+    user = u;
+    $('auth').hidden = !!u;
+    $('app').hidden = !u;
+    if (!u) { S = { cats: [], tasks: [] }; loaded = false; $('onb').hidden = true; return; }
+    if (!changed) return;
+    loaded = false; render();
+    await load();
+    if (!u.user_metadata?.onboarded) showOnb();
+  }
+  sb.auth.onAuthStateChange((_event, session) => { setTimeout(() => setUser(session?.user || null), 0); });
 })();
 </script>
-
 </body>
 </html>
